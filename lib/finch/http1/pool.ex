@@ -345,13 +345,14 @@ defmodule Finch.HTTP1.Pool do
     pool_state
   end
 
-  defp update_activity_info(:checkout, %__MODULE__.State{} = pool_state) do
-    update_in(pool_state.activity_info, fn %{in_use_count: count} ->
-      %{in_use_count: count + 1, last_checkout_ts: System.monotonic_time(:millisecond)}
-    end)
+  defp update_activity_info(:checkout, %__MODULE__.State{activity_info: info} = pool_state) do
+    %{pool_state | activity_info: %{
+      in_use_count: info.in_use_count + 1,
+      last_checkout_ts: System.monotonic_time(:millisecond)
+    }}
   end
 
-  defp update_activity_info(:checkin, %__MODULE__.State{} = pool_state) do
-    update_in(pool_state.activity_info.in_use_count, &max(&1 - 1, 0))
+  defp update_activity_info(:checkin, %__MODULE__.State{activity_info: info} = pool_state) do
+    %{pool_state | activity_info: %{info | in_use_count: max(info.in_use_count - 1, 0)}}
   end
 end

@@ -312,7 +312,7 @@ defmodule Finch.HTTP1.Conn do
         timeouts =
           if is_integer(timeouts.request_timeout) do
             elapsed_time = System.monotonic_time(:millisecond) - start_time
-            update_in(timeouts.request_timeout, &(&1 - elapsed_time))
+            %{timeouts | request_timeout: timeouts.request_timeout - elapsed_time}
           else
             timeouts
           end
@@ -367,7 +367,7 @@ defmodule Finch.HTTP1.Conn do
         end
 
       {:headers, ^ref, value} ->
-        resp_metadata = update_in(resp_metadata, [fields], &(&1 ++ value))
+        resp_metadata = Map.update!(resp_metadata, fields, &(&1 ++ value))
 
         case fun.({fields, value}, acc) do
           {:cont, acc} ->
