@@ -49,7 +49,7 @@ defmodule Finch.ALPNIntegrationTest do
     case result do
       {:ok, response} ->
         assert response.status == 200
-        body = Jason.decode!(response.body)
+        body = JSON.decode!(response.body)
         assert body["received_bytes"] == 65_538
 
       {:error, %Mint.HTTPError{reason: {:exceeds_window_size, :request, 65_535}}} ->
@@ -86,7 +86,7 @@ defmodule Finch.ALPNIntegrationTest do
       |> Finch.request(HTTP2Finch)
 
     assert response.status == 200
-    body = Jason.decode!(response.body)
+    body = JSON.decode!(response.body)
     assert body["received_bytes"] == 65_538
   end
 
@@ -114,7 +114,7 @@ defmodule Finch.ALPNIntegrationTest do
       |> Finch.request(HTTP1Finch)
 
     assert response.status == 200
-    body = Jason.decode!(response.body)
+    body = JSON.decode!(response.body)
     assert body["received_bytes"] == 65_538
   end
 end

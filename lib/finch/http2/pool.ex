@@ -391,7 +391,7 @@ defmodule Finch.HTTP2.Pool do
   def connecting(:info, message, data) do
     case HTTP2.stream(data.conn, message) do
       {:ok, conn, _responses} ->
-        data = put_in(data.conn, conn)
+        data = %{data | conn: conn}
 
         if HTTP2.open?(data.conn) do
           {:next_state, :connected, data}
@@ -405,7 +405,7 @@ defmodule Finch.HTTP2.Pool do
           Exception.message(error)
         ])
 
-        data = put_in(data.conn, conn)
+        data = %{data | conn: conn}
         {:next_state, :disconnected, data}
 
       :unknown ->
@@ -449,7 +449,7 @@ defmodule Finch.HTTP2.Pool do
   def connected(:info, message, data) do
     case HTTP2.stream(data.conn, message) do
       {:ok, conn, responses} ->
-        data = put_in(data.conn, conn)
+        data = %{data | conn: conn}
         update_max_concurrent_streams(data)
         {data, response_actions} = handle_responses(data, responses)
 
@@ -471,7 +471,7 @@ defmodule Finch.HTTP2.Pool do
           Exception.message(error)
         ])
 
-        data = put_in(data.conn, conn)
+        data = %{data | conn: conn}
         {data, actions} = handle_responses(data, responses)
 
         if HTTP2.open?(conn, :read) && Enum.any?(data.requests) do
@@ -514,12 +514,12 @@ defmodule Finch.HTTP2.Pool do
   def connected({:call, from}, :ping, data) do
     case HTTP2.ping(data.conn) do
       {:ok, conn, ref} ->
-        data = put_in(data.pings[ref], {from, System.monotonic_time()})
-        data = put_in(data.conn, conn)
+        data = %{data | pings: Map.put(data.pings, ref, {from, System.monotonic_time()})}
+        data = %{data | conn: conn}
         {:keep_state, data, [ping_action(data)]}
 
       {:error, conn, error} ->
-        data = put_in(data.conn, conn)
+        data = %{data | conn: conn}
         {:keep_state, data, [{:reply, from, {:error, error}}, ping_action(data)]}
     end
   end
@@ -527,11 +527,11 @@ defmodule Finch.HTTP2.Pool do
   def connected({:timeout, :ping}, :ping, data) do
     case HTTP2.ping(data.conn) do
       {:ok, conn, _ref} ->
-        data = put_in(data.conn, conn)
+        data = %{data | conn: conn}
         {:keep_state, data, [ping_action(data)]}
 
       {:error, conn, _error} ->
-        data = put_in(data.conn, conn)
+        data = %{data | conn: conn}
         {:next_state, :disconnected, data}
     end
   end
@@ -584,7 +584,7 @@ defmodule Finch.HTTP2.Pool do
   def connected_read_only(:info, message, data) do
     case HTTP2.stream(data.conn, message) do
       {:ok, conn, responses} ->
-        data = put_in(data.conn, conn)
+        data = %{data | conn: conn}
         {data, actions} = handle_responses(data, responses)
 
         # If the connection is still open for reading and we have pending requests
@@ -609,7 +609,7 @@ defmodule Finch.HTTP2.Pool do
           Exception.message(error)
         ])
 
-        data = put_in(data.conn, conn)
+        data = %{data | conn: conn}
         {data, actions} = handle_responses(data, responses)
 
         # If the connection is still open for reading and we have pending requests
@@ -702,10 +702,10 @@ defmodule Finch.HTTP2.Pool do
   defp start_request(data, method, path, headers, body) do
     case HTTP2.request(data.conn, method, path, headers, body) do
       {:ok, conn, ref} ->
-        {:ok, put_in(data.conn, conn), ref}
+        {:ok, %{data | conn: conn}, ref}
 
       {:error, conn, reason} ->
-        {:error, put_in(data.conn, conn), reason}
+        {:error, %{data | conn: conn}, reason}
     end
   end
 
@@ -757,8 +757,9 @@ defmodule Finch.HTTP2.Pool do
     data =
       if request = data.requests[ref] do
         send(request.from_pid, {request.request_ref, {kind, value}})
-        request = put_in(request.telemetry.metadata[kind], value)
-        put_in(data.requests[ref], request)
+        telemetry = %{request.telemetry | metadata: Map.put(request.telemetry.metadata, kind, value)}
+        request = %{request | telemetry: telemetry}
+        %{data | requests: Map.put(data.requests, ref, request)}
       else
         data
       end
@@ -789,12 +790,12 @@ defmodule Finch.HTTP2.Pool do
   end
 
   defp handle_response(data, {:pong, ref}, actions) do
-    case pop_in(data.pings[ref]) do
-      {{reply_to, start_time}, data} ->
+    case Map.pop(data.pings, ref) do
+      {{reply_to, start_time}, pings} ->
         rtt_native = System.monotonic_time() - start_time
-        {data, [{:reply, reply_to, {:ok, rtt_native}} | actions]}
+        {%{data | pings: pings}, [{:reply, reply_to, {:ok, rtt_native}} | actions]}
 
-      {nil, data} ->
+      {nil, _pings} ->
         # Timer-initiated ping, no caller to reply to
         {data, actions}
     end
@@ -840,12 +841,12 @@ defmodule Finch.HTTP2.Pool do
   defp handle_request_timeout(data, ref) do
     with {:pop, {request, data}} when not is_nil(request) <- {:pop, pop_request(data, ref)},
          {:ok, conn} <- HTTP2.cancel_request(data.conn, ref) do
-      data = put_in(data.conn, conn)
+      data = %{data | conn: conn}
       send(request.from_pid, {request.request_ref, {:error, Error.exception(:request_timeout)}})
       {:keep_state, data}
     else
       {:error, conn, _error} ->
-        data = put_in(data.conn, conn)
+        data = %{data | conn: conn}
 
         cond do
           HTTP2.open?(conn, :write) ->
@@ -884,8 +885,8 @@ defmodule Finch.HTTP2.Pool do
   # this is also a wrapper (Mint.HTTP2.stream_request_body/3)
   defp stream_request_body(data, ref, body) do
     case HTTP2.stream_request_body(data.conn, ref, body) do
-      {:ok, conn} -> {:ok, put_in(data.conn, conn)}
-      {:error, conn, reason} -> {:error, put_in(data.conn, conn), reason}
+      {:ok, conn} -> {:ok, %{data | conn: conn}}
+      {:error, conn, reason} -> {:error, %{data | conn: conn}, reason}
     end
   end
 
@@ -940,17 +941,17 @@ defmodule Finch.HTTP2.Pool do
     %{from: from, telemetry: telemetry} = request
     Telemetry.stop(:send, telemetry.send, telemetry.metadata)
     recv_start = Telemetry.start(:recv, telemetry.metadata)
-    request = put_in(request.telemetry[:recv], recv_start)
+    request = %{request | telemetry: Map.put(request.telemetry, :recv, recv_start)}
 
     if from do
       reply(request, {:ok, recv_start})
     end
 
-    put_in(data.requests[ref], request)
+    %{data | requests: Map.put(data.requests, ref, request)}
   end
 
   defp complete_request_if_done(data, ref, request) do
-    put_in(data.requests[ref], request)
+    %{data | requests: Map.put(data.requests, ref, request)}
   end
 
   defp smallest_window(conn, ref) do
@@ -980,7 +981,7 @@ defmodule Finch.HTTP2.Pool do
           {:error, conn, _error} -> conn
         end
 
-      data = put_in(data.conn, conn)
+      data = %{data | conn: conn}
       {_from, data} = pop_request(data, ref)
       data
     else
@@ -991,48 +992,48 @@ defmodule Finch.HTTP2.Pool do
   defp put_request(data, ref, request) do
     PoolMetrics.maybe_add(data.metrics_ref, :in_flight_requests, 1)
 
-    data
-    |> put_in([:requests, ref], request)
-    |> put_in([:refs, request.request_ref], ref)
+    %{data |
+      requests: Map.put(data.requests, ref, request),
+      refs: Map.put(data.refs, request.request_ref, ref)
+    }
     |> put_pid(request.from_pid, request.request_ref)
   end
 
   defp pop_request(data, ref) do
     PoolMetrics.maybe_add(data.metrics_ref, :in_flight_requests, -1)
 
-    case pop_in(data.requests[ref]) do
-      {nil, data} ->
+    case Map.pop(data.requests, ref) do
+      {nil, _requests} ->
         {nil, data}
 
-      {request, data} ->
-        {_ref, data} =
-          data
-          |> pop_pid(request.from_pid, request.request_ref)
-          |> pop_in([:refs, request.request_ref])
-
-        {request, data}
+      {request, requests} ->
+        data = %{data | requests: requests}
+        data = pop_pid(data, request.from_pid, request.request_ref)
+        {request, %{data | refs: Map.delete(data.refs, request.request_ref)}}
     end
   end
 
   defp put_pid(data, pid, request_ref) do
-    update_in(data.requests_by_pid, fn requests_by_pid ->
-      Map.update(requests_by_pid, pid, MapSet.new([request_ref]), &MapSet.put(&1, request_ref))
-    end)
+    requests_by_pid =
+      Map.update(data.requests_by_pid, pid, MapSet.new([request_ref]), &MapSet.put(&1, request_ref))
+
+    %{data | requests_by_pid: requests_by_pid}
   end
 
   defp pop_pid(data, pid, request_ref) do
-    update_in(data.requests_by_pid, fn requests_by_pid ->
-      requests =
-        requests_by_pid
-        |> Map.get(pid, MapSet.new())
-        |> MapSet.delete(request_ref)
+    requests =
+      data.requests_by_pid
+      |> Map.get(pid, MapSet.new())
+      |> MapSet.delete(request_ref)
 
+    requests_by_pid =
       if Enum.empty?(requests) do
-        Map.delete(requests_by_pid, pid)
+        Map.delete(data.requests_by_pid, pid)
       else
-        Map.put(requests_by_pid, pid, requests)
+        Map.put(data.requests_by_pid, pid, requests)
       end
-    end)
+
+    %{data | requests_by_pid: requests_by_pid}
   end
 
   defp ping_action(data), do: {{:timeout, :ping}, data.ping_interval, :ping}

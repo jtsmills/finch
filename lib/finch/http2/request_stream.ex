@@ -53,7 +53,7 @@ defmodule Finch.HTTP2.RequestStream do
       <<bytes_to_send::binary-size(^window), rest::binary>> ->
         # when the buffer contains more bytes than a window, send as much of the
         # buffer as we can
-        {put_in(request.buffer, rest), bytes_to_send}
+        {%{request | buffer: rest}, bytes_to_send}
 
       _ ->
         # when the buffer can fit in the windows, continue reducing using the buffer
@@ -65,7 +65,7 @@ defmodule Finch.HTTP2.RequestStream do
   defp continue_reduce(request, acc) do
     case request.continuation.({:cont, acc}) do
       {finished, {messages, _size, _window}} when finished in [:done, :halted] ->
-        {put_in(request.status, :done), Enum.reverse(messages)}
+        {%{request | status: :done}, Enum.reverse(messages)}
 
       {:suspended,
        {[{overload_message, overload_message_size} | messages_that_fit], total_size, window_size},
