@@ -3,7 +3,7 @@ defmodule Finch.Request do
   A request struct.
   """
 
-  @enforce_keys [:scheme, :host, :port, :method, :path, :headers, :body, :query]
+  @enforce_keys [:scheme, :host, :port, :method, :path, :headers, :body, :query, :request_path]
   defstruct [
     :scheme,
     :host,
@@ -13,6 +13,7 @@ defmodule Finch.Request do
     :headers,
     :body,
     :query,
+    :request_path,
     :unix_socket,
     pool_tag: :default,
     private: %{}
@@ -80,6 +81,7 @@ defmodule Finch.Request do
           headers: headers(),
           body: body(),
           query: String.t() | nil,
+          request_path: String.t(),
           unix_socket: String.t() | nil,
           pool_tag: Finch.Pool.pool_tag(),
           private: private_metadata()
@@ -103,6 +105,7 @@ defmodule Finch.Request do
   end
 
   @doc false
+  def request_path(%{request_path: request_path}) when is_binary(request_path), do: request_path
   def request_path(%{path: path, query: nil}), do: path
   def request_path(%{path: path, query: ""}), do: path
   def request_path(%{path: path, query: query}), do: "#{path}?#{query}"
@@ -115,6 +118,13 @@ defmodule Finch.Request do
     pool_tag = Keyword.get(opts, :pool_tag, :default)
     {scheme, host, port, path, query} = parse_url(url)
 
+    request_path =
+      case query do
+        nil -> path
+        "" -> path
+        _ -> "#{path}?#{query}"
+      end
+
     %Finch.Request{
       scheme: scheme,
       host: host,
@@ -124,6 +134,7 @@ defmodule Finch.Request do
       headers: headers,
       body: body,
       query: query,
+      request_path: request_path,
       unix_socket: unix_socket,
       pool_tag: pool_tag
     }
