@@ -50,7 +50,7 @@ defmodule Finch.ALPNServer.PlugRouter do
     {:ok, body, conn} = read_body(conn)
     body_size = byte_size(body)
 
-    response = Jason.encode!(%{received_bytes: body_size})
+    response = JSON.encode!(%{received_bytes: body_size})
 
     conn
     |> put_resp_content_type("application/json")
