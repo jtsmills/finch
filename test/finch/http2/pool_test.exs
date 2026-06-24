@@ -401,6 +401,111 @@ defmodule Finch.HTTP2.PoolTest do
     end
   end
 
+  describe "receive_timeout (inter-chunk) and request_timeout (total)" do
+    test "receive_timeout fires when the stream stalls mid-response", %{request: req} do
+      us = self()
+
+      {:ok, pool} =
+        start_server_and_connect_with(fn port ->
+          start_pool(port)
+        end)
+
+      spawn(fn ->
+        resp = request(pool, req, receive_timeout: 50)
+        send(us, {:resp, resp})
+      end)
+
+      assert_recv_frames([headers(stream_id: stream_id)])
+
+      server_send_frames([
+        headers(
+          stream_id: stream_id,
+          hbf: server_encode_headers([{":status", "200"}]),
+          flags: set_flags(:headers, [:end_headers])
+        ),
+        data(stream_id: stream_id, data: "chunk")
+      ])
+
+      assert_receive {:resp, {:error, %Finch.Error{reason: :timeout}, _acc}}, 500
+
+      # The stalled request is canceled.
+      assert_recv_frames([rst_stream(stream_id: ^stream_id, error_code: :cancel)])
+    end
+
+    test "receive_timeout re-arms on each chunk, so a steady drip succeeds", %{request: req} do
+      us = self()
+
+      {:ok, pool} =
+        start_server_and_connect_with(fn port ->
+          start_pool(port)
+        end)
+
+      spawn(fn ->
+        resp = request(pool, req, receive_timeout: 200)
+        send(us, {:resp, resp})
+      end)
+
+      assert_recv_frames([headers(stream_id: stream_id)])
+
+      server_send_frames([
+        headers(
+          stream_id: stream_id,
+          hbf: server_encode_headers([{":status", "200"}]),
+          flags: set_flags(:headers, [:end_headers])
+        )
+      ])
+
+      # Total elapsed (~250ms) exceeds the 200ms window, but each 50ms gap stays well
+      # under it — a non-re-arming timer would have fired by now.
+      for i <- 1..4 do
+        Process.sleep(50)
+        server_send_frames([data(stream_id: stream_id, data: "c#{i}")])
+      end
+
+      Process.sleep(50)
+
+      server_send_frames([
+        data(stream_id: stream_id, data: "end", flags: set_flags(:data, [:end_stream]))
+      ])
+
+      assert_receive {:resp, {:ok, {200, [], "c1c2c3c4end"}}}, 1000
+    end
+
+    test "request_timeout caps the total even while chunks keep arriving", %{request: req} do
+      us = self()
+
+      {:ok, pool} =
+        start_server_and_connect_with(fn port ->
+          start_pool(port)
+        end)
+
+      spawn(fn ->
+        # Generous idle window so only the total cap can fire.
+        resp = request(pool, req, request_timeout: 120, receive_timeout: 1000)
+        send(us, {:resp, resp})
+      end)
+
+      assert_recv_frames([headers(stream_id: stream_id)])
+
+      server_send_frames([
+        headers(
+          stream_id: stream_id,
+          hbf: server_encode_headers([{":status", "200"}]),
+          flags: set_flags(:headers, [:end_headers])
+        )
+      ])
+
+      # Chunks every 40ms keep the idle timer from firing, so only :request_timeout
+      # (120ms, one-shot) can end the request.
+      for i <- 1..5 do
+        Process.sleep(40)
+        server_send_frames([data(stream_id: stream_id, data: "c#{i}")])
+      end
+
+      assert_receive {:resp, {:error, %Finch.Error{reason: :timeout}, _acc}}, 500
+    end
+  end
+
   describe "async requests" do
     test "sends responses to the caller", %{test: finch_name} do
       {:ok, url} = start_server!()
