@@ -883,13 +883,12 @@ defmodule Finch do
       available and, for HTTP/1, to check out a connection from the pool. Default value is `5_000`.
       Setting it to `:infinity` may block forever if no pool or connection becomes available.
 
-    * `:receive_timeout` - The maximum time to wait for each chunk to be received before returning an error.
-      Default value is `15_000`.
+    * `:receive_timeout` - The maximum time to wait for each chunk to be received before returning
+      an error. Re-armed on each received chunk, so it bounds the gap between chunks rather than the
+      whole request. Default value is `15_000`.
 
-    * `:request_timeout` - The amount of time to wait for a complete response before returning an error.
-      This timeout only applies to HTTP/1, and its current implementation is a best effort timeout,
-      it does not guarantee the call will return precisely when the time has elapsed.
-      Default value is `:infinity`.
+    * `:request_timeout` - The total wall-clock time to wait for a complete response before returning
+      an error. For HTTP/1 it is a best-effort timeout. Default value is `:infinity`.
 
     * `:pool_strategy` - When the pool has multiple shards (`count: N`), selects which shards handles
       the request. Default is random selection. See `t:pool_strategy/0` for details.
@@ -901,6 +900,7 @@ defmodule Finch do
 
   def request(%Request{} = req, name, opts) do
     validate_no_req_body_fun!(req, "Finch.request/3")
+
     Keyword.validate!(opts, [:pool_timeout, :receive_timeout, :request_timeout, :pool_strategy])
 
     request_span req, name do
