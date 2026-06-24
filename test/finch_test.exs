@@ -213,6 +213,30 @@ defmodule FinchTest do
                |> Finch.request(finch_name)
     end
 
+    test "accepts :receive_timeout and :request_timeout over HTTP/2", %{
+      bypass: bypass,
+      finch_name: finch_name
+    } do
+      Finch.TestHelper.start_finch!(
+        name: finch_name,
+        pools: %{
+          endpoint(bypass) => [
+            protocols: [:http2],
+            count: 1,
+            conn_opts: [transport_opts: [verify: :verify_none]]
+          ]
+        }
+      )
+
+      Bypass.expect_once(bypass, "GET", "/", fn conn ->
+        Plug.Conn.send_resp(conn, 200, "OK")
+      end)
+
+      assert {:ok, %{status: 200, body: "OK"}} =
+               Finch.build(:get, endpoint(bypass))
+               |> Finch.request(finch_name, receive_timeout: 5_000, request_timeout: 10_000)
+    end
+
     test "successful post request, with body and query string", %{
       bypass: bypass,
       finch_name: finch_name
