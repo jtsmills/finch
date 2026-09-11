@@ -30,6 +30,29 @@ defmodule Finch.HTTP2.PoolMetricsTest do
     assert {:error, :not_found} = Finch.get_pool_status(finch_name, url)
   end
 
+  test "reports the server's max_concurrent_streams, and keeps reporting it across requests",
+       %{test: finch_name, url: url} do
+    Finch.TestHelper.start_finch!(
+      name: finch_name,
+      pools: %{
+        url => [
+          protocols: [:http2],
+          conn_opts: [transport_opts: [verify: :verify_none]],
+          start_pool_metrics?: true
+        ]
+      }
+    )
+
+    for _ <- 1..3 do
+      {:ok, %{status: 200}} = Finch.build(:get, "#{url}/") |> Finch.request(finch_name)
+    end
+
+    assert {:ok, [%PoolMetrics{max_concurrent_streams: max_streams}]} =
+             Finch.get_pool_status(finch_name, url)
+
+    assert max_streams > 0
+  end
+
   test "get pool status async requests", %{test: finch_name, url: url} do
     parent = self()
 
