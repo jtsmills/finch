@@ -1019,11 +1019,20 @@ defmodule Finch.HTTP2.Pool do
     end)
   end
 
+  # Only bytes actually written count, or unrelated frames would keep a stalled upload alive.
+  defp stamp_send_progress(request, chunks) do
+    if IO.iodata_length(chunks) > 0 do
+      %{request | last_activity: System.monotonic_time(:millisecond)}
+    else
+      request
+    end
+  end
+
   defp continue_request(data, ref, request) do
     with :streaming <- request.stream.status,
          window = max(smallest_window(data.conn, ref), 0),
          {stream, chunks} = RequestStream.next_chunk(request.stream, window),
-         request = %{request | stream: stream},
+         request = stamp_send_progress(%{request | stream: stream}, chunks),
          {:ok, data} <- stream_chunks(data, ref, chunks, request) do
       {:ok, complete_request_if_done(data, ref, request)}
     else
