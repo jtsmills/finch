@@ -524,7 +524,7 @@ defmodule Finch.HTTP2.Pool do
 
   def connected({:timeout, {:receive_timeout, ref}}, _content, data) do
     case idle_window(data, ref) do
-      {:wait, remaining} -> {:keep_state_and_data, [rearm_receive_timeout(ref, remaining)]}
+      {:wait, remaining} -> {:keep_state_and_data, [receive_timeout_action(ref, remaining)]}
       :expired -> expire_request_connected(data, ref)
     end
   end
@@ -551,8 +551,8 @@ defmodule Finch.HTTP2.Pool do
   def connected({:call, from}, :ping, data) do
     case HTTP2.ping(data.conn) do
       {:ok, conn, ref} ->
-        data = %{data | pings: Map.put(data.pings, ref, {from, System.monotonic_time()})}
-        data = %{data | conn: conn}
+        pings = Map.put(data.pings, ref, {from, System.monotonic_time()})
+        data = %{data | conn: conn, pings: pings}
         {:keep_state, data, [ping_action(data)]}
 
       {:error, conn, error} ->
@@ -695,7 +695,7 @@ defmodule Finch.HTTP2.Pool do
   # is closed for writing, so we can't tell the server to cancel the request anymore.
   def connected_read_only({:timeout, {:receive_timeout, ref}}, _content, data) do
     case idle_window(data, ref) do
-      {:wait, remaining} -> {:keep_state_and_data, [rearm_receive_timeout(ref, remaining)]}
+      {:wait, remaining} -> {:keep_state_and_data, [receive_timeout_action(ref, remaining)]}
       :expired -> expire_request_read_only(data, ref)
     end
   end
@@ -761,7 +761,7 @@ defmodule Finch.HTTP2.Pool do
 
     case continue_request(data, ref, request) do
       {:ok, data} ->
-        receive_timeout = {{:timeout, {:receive_timeout, ref}}, request.receive_timeout, nil}
+        receive_timeout = receive_timeout_action(ref, request.receive_timeout)
 
         request_timeout =
           {{:timeout, {:request_timeout, ref}}, opts[:request_timeout] || :infinity, nil}
@@ -876,31 +876,19 @@ defmodule Finch.HTTP2.Pool do
     end
   end
 
-  # :receive_timeout measures the gap between chunks, matching the HTTP/1 pool's
-  # per-recv timeout. Rather than cancelling and restarting the timer on every chunk,
-  # each chunk stamps :last_activity and the timer re-arms for the remaining idle
-  # window only when it actually fires. A long stream then costs one map write per
-  # chunk instead of a timer cancel/start pair.
+  # Chunks only stamp :last_activity and the timer re-arms for the remainder when it fires,
+  # so a long stream costs one map write per chunk instead of a timer cancel/start pair.
   defp idle_window(data, ref) do
-    case data.requests[ref] do
-      %{receive_timeout: timeout, last_activity: last} when is_integer(timeout) ->
-        case timeout - (System.monotonic_time(:millisecond) - last) do
-          remaining when remaining > 0 -> {:wait, remaining}
-          _ -> :expired
-        end
-
-      # An :infinity receive_timeout is never armed, so this timer cannot fire for
-      # such a request. Keep waiting rather than expiring one if it ever does.
-      %{} ->
-        {:wait, :infinity}
-
-      nil ->
-        :expired
+    with %{receive_timeout: timeout, last_activity: last} <- data.requests[ref],
+         remaining when remaining > 0 <- timeout - (System.monotonic_time(:millisecond) - last) do
+      {:wait, remaining}
+    else
+      _ -> :expired
     end
   end
 
-  defp rearm_receive_timeout(ref, remaining) do
-    {{:timeout, {:receive_timeout, ref}}, remaining, nil}
+  defp receive_timeout_action(ref, timeout) do
+    {{:timeout, {:receive_timeout, ref}}, timeout, nil}
   end
 
   # The client receive loop resets on each message, so the longest legitimate wait is
@@ -1112,9 +1100,8 @@ defmodule Finch.HTTP2.Pool do
       {request, requests} ->
         PoolMetrics.maybe_add(data.metrics_ref, :in_flight_requests, -1)
 
-        data = %{data | requests: requests}
-        data = pop_pid(data, request.from_pid, request.request_ref)
-        {request, %{data | refs: Map.delete(data.refs, request.request_ref)}}
+        data = %{data | requests: requests, refs: Map.delete(data.refs, request.request_ref)}
+        {request, pop_pid(data, request.from_pid, request.request_ref)}
     end
   end
 
@@ -1187,13 +1174,13 @@ defmodule Finch.HTTP2.Pool do
 
   # Called for every socket message, but the setting only moves on a SETTINGS
   # frame, so write through to ETS only when it actually changes.
-  defp update_max_concurrent_streams(%{conn: conn, metrics_ref: metrics_ref} = data) do
-    case HTTP2.get_server_setting(conn, :max_concurrent_streams) do
-      value when value == :erlang.map_get(:max_concurrent_streams, data) ->
+  defp update_max_concurrent_streams(%{max_concurrent_streams: current} = data) do
+    case HTTP2.get_server_setting(data.conn, :max_concurrent_streams) do
+      ^current ->
         data
 
       value ->
-        PoolMetrics.maybe_put(metrics_ref, :max_concurrent_streams, value)
+        PoolMetrics.maybe_put(data.metrics_ref, :max_concurrent_streams, value)
         %{data | max_concurrent_streams: value}
     end
   end
