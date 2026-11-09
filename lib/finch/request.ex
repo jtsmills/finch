@@ -121,13 +121,6 @@ defmodule Finch.Request do
     pool_tag = Keyword.get(opts, :pool_tag, :default)
     {scheme, host, port, path, query} = parse_url(url)
 
-    request_path =
-      case query do
-        nil -> path
-        "" -> path
-        _ -> "#{path}?#{query}"
-      end
-
     %Finch.Request{
       scheme: scheme,
       host: host,
@@ -137,7 +130,7 @@ defmodule Finch.Request do
       headers: headers,
       body: body,
       query: query,
-      request_path: request_path,
+      request_path: request_path(%{path: path, query: query}),
       unix_socket: unix_socket,
       pool_tag: pool_tag
     }
