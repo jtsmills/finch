@@ -230,6 +230,7 @@ defmodule Finch.HTTP2.Pool do
       requests: %{},
       refs: %{},
       requests_by_pid: %{},
+      monitors: %{},
       awaiting_ready: [],
       backoff_base: @backoff_base,
       backoff_max: @backoff_max,
@@ -283,12 +284,17 @@ defmodule Finch.HTTP2.Pool do
 
     PoolMetrics.maybe_add(data.metrics_ref, :in_flight_requests, -map_size(data.requests))
 
+    Enum.each(data.monitors, fn {_pid, monitor_ref} ->
+      Process.demonitor(monitor_ref, [:flush])
+    end)
+
     data = %{
       data
       | conn: nil,
         requests: %{},
         refs: %{},
         requests_by_pid: %{},
+        monitors: %{},
         pings: %{},
         draining: false
     }
@@ -468,10 +474,6 @@ defmodule Finch.HTTP2.Pool do
   end
 
   def connected(:cast, {:async_request, pid, request_ref, req, opts}, data) do
-    if is_nil(data.requests_by_pid[pid]) do
-      Process.monitor(pid)
-    end
-
     send_request(nil, pid, request_ref, req, opts, data)
   end
 
@@ -608,7 +610,9 @@ defmodule Finch.HTTP2.Pool do
 
   def connected_read_only({:call, from}, {:cancel, request_ref}, data) do
     data = cancel_request(data, request_ref)
-    {:keep_state, data, {:reply, from, :ok}}
+    # Reply before a possible stop, so the caller never sees the pool exit.
+    :ok = :gen_statem.reply(from, :ok)
+    continue_read_only(data)
   end
 
   def connected_read_only(:cast, {:async_request, pid, request_ref, _, _}, _) do
@@ -617,7 +621,9 @@ defmodule Finch.HTTP2.Pool do
   end
 
   def connected_read_only(:info, {:DOWN, _, :process, pid, _}, data) do
-    {:keep_state, cancel_requests(data, pid)}
+    data
+    |> cancel_requests(pid)
+    |> continue_read_only()
   end
 
   def connected_read_only(:info, message, data) do
@@ -696,6 +702,25 @@ defmodule Finch.HTTP2.Pool do
 
   def connected_read_only({:timeout, {:request_timeout, ref}}, _content, data) do
     expire_request_read_only(data, ref)
+  end
+
+  # If requests remain, keep waiting for their responses. If the pool is
+  # draining and all requests are done, stop normally so the supervisor
+  # restarts it with a fresh DNS lookup. Otherwise enter the disconnected
+  # state so we can try to re-establish a connection. Every way a request
+  # leaves the read-only state other than a socket message must end here:
+  # with no requests left, the server has nothing more to send.
+  defp continue_read_only(data) do
+    cond do
+      map_size(data.requests) > 0 ->
+        {:keep_state, data}
+
+      data.draining ->
+        {:stop, :normal, data}
+
+      true ->
+        {:next_state, :disconnected, data}
+    end
   end
 
   defp send_request(from, from_pid, request_ref, req, opts, data) do
@@ -935,16 +960,7 @@ defmodule Finch.HTTP2.Pool do
       send(request.from_pid, {request.request_ref, {:error, Error.exception(:timeout)}})
     end
 
-    cond do
-      map_size(data.requests) > 0 ->
-        {:keep_state, data}
-
-      data.draining ->
-        {:stop, :normal, data}
-
-      true ->
-        {:next_state, :disconnected, data}
-    end
+    continue_read_only(data)
   end
 
   # Exponential backoff with jitter
@@ -1102,7 +1118,13 @@ defmodule Finch.HTTP2.Pool do
     end
   end
 
+  # Every caller, synchronous or async, is monitored while it has requests in
+  # flight, so that a caller exiting without cancelling releases its requests.
+  # The monitor is taken with the caller's first request and dropped with its
+  # last one, so a long-lived caller does not accumulate monitors.
   defp put_pid(data, pid, request_ref) do
+    monitors = Map.put_new_lazy(data.monitors, pid, fn -> Process.monitor(pid) end)
+
     requests_by_pid =
       Map.update(
         data.requests_by_pid,
@@ -1111,7 +1133,7 @@ defmodule Finch.HTTP2.Pool do
         &MapSet.put(&1, request_ref)
       )
 
-    %{data | requests_by_pid: requests_by_pid}
+    %{data | requests_by_pid: requests_by_pid, monitors: monitors}
   end
 
   defp pop_pid(data, pid, request_ref) do
@@ -1120,14 +1142,17 @@ defmodule Finch.HTTP2.Pool do
       |> Map.get(pid, MapSet.new())
       |> MapSet.delete(request_ref)
 
-    requests_by_pid =
-      if Enum.empty?(requests) do
-        Map.delete(data.requests_by_pid, pid)
-      else
-        Map.put(data.requests_by_pid, pid, requests)
+    if Enum.empty?(requests) do
+      {monitor_ref, monitors} = Map.pop(data.monitors, pid)
+
+      if monitor_ref do
+        Process.demonitor(monitor_ref, [:flush])
       end
 
-    %{data | requests_by_pid: requests_by_pid}
+      %{data | requests_by_pid: Map.delete(data.requests_by_pid, pid), monitors: monitors}
+    else
+      %{data | requests_by_pid: Map.put(data.requests_by_pid, pid, requests)}
+    end
   end
 
   defp ping_action(data), do: {{:timeout, :ping}, data.ping_interval, :ping}
