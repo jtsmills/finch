@@ -850,6 +850,27 @@ defmodule Finch.HTTP2.PoolTest do
 
       assert_receive {:resp, {:error, %Finch.Error{reason: :timeout}, _acc}}, 500
     end
+
+    test "a timeout during a stalled upload returns an error to the blocked caller", %{
+      request: req
+    } do
+      us = self()
+
+      {:ok, pool} =
+        start_server_and_connect_with([server_settings: [initial_window_size: 0]], fn port ->
+          start_pool(port)
+        end)
+
+      spawn(fn ->
+        resp = request(pool, %{req | method: "POST", body: "stalled body"}, receive_timeout: 50)
+        send(us, {:resp, resp})
+      end)
+
+      assert_recv_frames([headers(stream_id: stream_id)])
+
+      assert_receive {:resp, {:error, %Finch.Error{reason: :timeout}, _acc}}, 500
+      assert_recv_frames([rst_stream(stream_id: ^stream_id, error_code: :cancel)])
+    end
   end
 
   describe "async requests" do
