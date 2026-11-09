@@ -714,7 +714,7 @@ defmodule Finch.HTTP2.Pool do
     {request, data} = pop_request(data, ref)
 
     if request != nil do
-      send(request.from_pid, {request.request_ref, {:error, Error.exception(:timeout)}})
+      fail_request(request, Error.exception(:timeout))
     end
 
     continue_read_only(data)
@@ -946,7 +946,7 @@ defmodule Finch.HTTP2.Pool do
     with {:pop, {request, data}} when not is_nil(request) <- {:pop, pop_request(data, ref)},
          {:ok, conn} <- HTTP2.cancel_request(data.conn, ref) do
       data = %{data | conn: conn}
-      send(request.from_pid, {request.request_ref, {:error, Error.exception(:timeout)}})
+      fail_request(request, Error.exception(:timeout))
       {:keep_state, data}
     else
       {:error, conn, _error} ->
