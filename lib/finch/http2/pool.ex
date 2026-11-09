@@ -779,9 +779,10 @@ defmodule Finch.HTTP2.Pool do
     case continue_request(data, ref, request) do
       {:ok, data} ->
         # Idle timeout: each part of the response stamps :last_activity (see idle_window/2)
-        idle_timeout = receive_timeout_action(ref, request.receive_timeout)
+        idle_timeout = receive_timeout_action(ref, non_negative(request.receive_timeout))
         # Total wall-clock cap (one-shot, never re-armed)
-        total_timeout = {{:timeout, {:request_timeout, ref}}, request.request_timeout, nil}
+        total_timeout =
+          {{:timeout, {:request_timeout, ref}}, non_negative(request.request_timeout), nil}
 
         {:keep_state, data, [idle_timeout, total_timeout, ping_action(data)]}
 
@@ -930,6 +931,10 @@ defmodule Finch.HTTP2.Pool do
       | actions
     ]
   end
+
+  # A negative relative timeout crashes gen_statem, taking every stream on the connection.
+  defp non_negative(timeout) when is_integer(timeout), do: max(timeout, 0)
+  defp non_negative(:infinity), do: :infinity
 
   defp fail_safe_timeout(opts) do
     receive_timeout = opts[:receive_timeout]
