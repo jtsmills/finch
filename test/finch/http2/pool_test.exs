@@ -871,6 +871,30 @@ defmodule Finch.HTTP2.PoolTest do
       assert_receive {:resp, {:error, %Finch.Error{reason: :timeout}, _acc}}, 500
       assert_recv_frames([rst_stream(stream_id: ^stream_id, error_code: :cancel)])
     end
+
+    for option <- [:receive_timeout, :request_timeout] do
+      test "a negative #{option} times out that request and keeps the pool running", %{
+        request: req
+      } do
+        us = self()
+
+        {:ok, pool} =
+          start_server_and_connect_with(fn port ->
+            start_pool(port)
+          end)
+
+        spawn(fn ->
+          resp = request(pool, req, [{unquote(option), -1}])
+          send(us, {:resp, resp})
+        end)
+
+        assert_recv_frames([headers(stream_id: stream_id)])
+
+        assert_receive {:resp, {:error, %Finch.Error{reason: :timeout}, _acc}}, 500
+        assert_recv_frames([rst_stream(stream_id: ^stream_id, error_code: :cancel)])
+        assert {:connected, _data} = :sys.get_state(pool)
+      end
+    end
   end
 
   describe "async requests" do

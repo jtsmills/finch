@@ -761,10 +761,9 @@ defmodule Finch.HTTP2.Pool do
 
     case continue_request(data, ref, request) do
       {:ok, data} ->
-        receive_timeout = receive_timeout_action(ref, request.receive_timeout)
-
-        request_timeout =
-          {{:timeout, {:request_timeout, ref}}, opts[:request_timeout] || :infinity, nil}
+        receive_timeout = receive_timeout_action(ref, non_negative(request.receive_timeout))
+        timeout = non_negative(opts[:request_timeout] || :infinity)
+        request_timeout = {{:timeout, {:request_timeout, ref}}, timeout, nil}
 
         {:keep_state, data, [receive_timeout, request_timeout, ping_action(data)]}
 
@@ -890,6 +889,10 @@ defmodule Finch.HTTP2.Pool do
   defp receive_timeout_action(ref, timeout) do
     {{:timeout, {:receive_timeout, ref}}, timeout, nil}
   end
+
+  # A negative relative timeout crashes gen_statem, taking every stream on the connection.
+  defp non_negative(timeout) when is_integer(timeout), do: max(timeout, 0)
+  defp non_negative(:infinity), do: :infinity
 
   # The client receive loop resets on each message, so the longest legitimate wait is
   # bounded by the total (:request_timeout) or, when unset, the inter-chunk :receive_timeout.
