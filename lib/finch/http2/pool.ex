@@ -809,7 +809,12 @@ defmodule Finch.HTTP2.Pool do
           | metadata: Map.put(request.telemetry.metadata, kind, value)
         }
 
-        request = %{request | telemetry: telemetry}
+        request = %{
+          request
+          | telemetry: telemetry,
+            last_activity: System.monotonic_time(:millisecond)
+        }
+
         %{data | requests: Map.put(data.requests, ref, request)}
       else
         data

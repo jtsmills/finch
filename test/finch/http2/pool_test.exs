@@ -895,6 +895,41 @@ defmodule Finch.HTTP2.PoolTest do
         assert {:connected, _data} = :sys.get_state(pool)
       end
     end
+
+    test "response headers restart the idle window", %{request: req} do
+      us = self()
+
+      {:ok, pool} =
+        start_server_and_connect_with(fn port ->
+          start_pool(port)
+        end)
+
+      spawn(fn ->
+        resp = request(pool, req, receive_timeout: 600)
+        send(us, {:resp, resp})
+      end)
+
+      assert_recv_frames([headers(stream_id: stream_id)])
+
+      # 700ms in total exceeds the window, but neither gap does.
+      Process.sleep(300)
+
+      server_send_frames([
+        headers(
+          stream_id: stream_id,
+          hbf: server_encode_headers([{":status", "200"}]),
+          flags: set_flags(:headers, [:end_headers])
+        )
+      ])
+
+      Process.sleep(400)
+
+      server_send_frames([
+        data(stream_id: stream_id, data: "done", flags: set_flags(:data, [:end_stream]))
+      ])
+
+      assert_receive {:resp, {:ok, {200, [], "done"}}}, 1000
+    end
   end
 
   describe "async requests" do
